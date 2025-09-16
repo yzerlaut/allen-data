@@ -17,7 +17,7 @@ from allensdk.brain_observatory.ecephys.ecephys_project_cache import EcephysProj
 
 # just to disable the HDMF cache namespace warnings, REMOVE to see them
 import warnings
-#warnings.filterwarnings("ignore")ions = cache.get_session_table()
+warnings.filterwarnings("ignore")
 
 # %%
 data_directory = os.path.join(os.path.expanduser('~'), 
@@ -37,6 +37,7 @@ sessions.full_genotype.value_counts()
 # %%
 PV_sessions = sessions[sessions.full_genotype.str.find('Pvalb-IRES-Cre') > -1]
 SST_sessions = sessions[sessions.full_genotype.str.find('Sst-IRES-Cre') > -1]
+VIP_sessions = sessions[sessions.full_genotype.str.find('Vip-IRES-Cre') > -1]
 
 # %%
 Visual_Areas = [v for v in np.unique(np.concatenate([np.array(x, dtype=str)\
@@ -86,7 +87,7 @@ def optotagging_spike_counts(session, trials, units,
 
 
 # %%
-#plot_optotagging_response(spikes_matrix)
+# plot_optotagging_response(spikes_matrix)
 
 # %%
 def analyze_optotagging_responses(session, trials, units,
@@ -161,9 +162,10 @@ def analyze_optotagging_responses(session, trials, units,
         plt.xlim([0,axis_limit])
         plt.ylim([0,axis_limit])
 
-        pt.annotate(AX[1], '"+" units\n(n=%i)\n\n' % np.sum(inclusion_cond), (0.8,0), ha='center', color=pos_color)
+        pt.annotate(AX[1], '"+" units\n(n=%i)\n\n' % np.sum(inclusion_cond), 
+                    (1.,0), ha='left', color=pos_color)
         pt.annotate(AX[1], '"-" units\n(n=%i)' % (len(inclusion_cond)-np.sum(inclusion_cond)), 
-                    (0.8,0), ha='center', color=neg_color)
+                    (1.,0), ha='left', color=neg_color)
         plt.xlabel('baseline (Hz)')
         plt.ylabel('evoked (Hz)')
         
@@ -176,7 +178,7 @@ def analyze_optotagging_responses(session, trials, units,
 # ## Example SST-Cre session
 
 # %%
-session = cache.get_session_data(756029989)
+session = cache.get_session_data(SST_sessions.index[2])
 
 # units in the visual system
 units = session.units[session.units.ecephys_structure_acronym.str.match('VIS')]
@@ -195,10 +197,32 @@ positive_units, fig, AX = analyze_optotagging_responses(session, trials, units,
 fig.savefig('figures/SST-session-phototagging.svg')
 
 # %% [markdown]
+# ## Example VIP-Cre session
+
+# %%
+session = cache.get_session_data(VIP_sessions.index[0])
+
+# units in the visual system
+units = session.units[session.units.ecephys_structure_acronym.str.match('VIS')]
+
+# we use the 10ms pulse 
+trials = session.optogenetic_stimulation_epochs[\
+                (session.optogenetic_stimulation_epochs.stimulus_name=='pulse') & 
+                (session.optogenetic_stimulation_epochs.duration > 0.009) &
+                (session.optogenetic_stimulation_epochs.duration < 0.02)]
+
+# %%
+positive_units, fig, AX = analyze_optotagging_responses(session, trials, units,
+                                                        pos_color='tab:purple',
+                                                        neg_color='silver',
+                                                        with_fig=True)
+fig.savefig('figures/VIP-session-phototagging.svg')
+
+# %% [markdown]
 # ## Example PV-Cre session
 
 # %%
-session = cache.get_session_data(721123822)
+session = cache.get_session_data(PV_sessions.index[0])
 
 # units in the visual system
 units = session.units[session.units.ecephys_structure_acronym.str.match('VIS')]
@@ -241,7 +265,7 @@ trials = session.optogenetic_stimulation_epochs[\
                 (session.optogenetic_stimulation_epochs.duration > 0.009) &
                 (session.optogenetic_stimulation_epochs.duration < 0.02)]
 
-_ = analyze_optotagging_responses(session, trials, units, #spikes_matrix,
+_ = analyze_optotagging_responses(session, trials, units, 
                                   label='10ms pulse', with_fig=True)
 
 # %%
@@ -274,8 +298,8 @@ Optotagging = {}
 
 Nmin_units =  2
 
-for Sessions, Key in zip([PV_sessions, SST_sessions],
-                         ['PV_sessions', 'SST_sessions']):
+for Sessions, Key in zip([PV_sessions, SST_sessions, VIP_sessions],
+                         ['PV_sessions', 'SST_sessions', 'VIP_sessions']):
     
     Optotagging[Key] = []
     Optotagging[Key.replace('sessions', 'positive_units')] = []
@@ -326,7 +350,7 @@ Optotagging = np.load(os.path.join('data',
                             'Optotagging-Results.npy'),
                       allow_pickle=True).item()
 
-for Key in ['PV_sessions', 'SST_sessions']:
+for Key in ['PV_sessions', 'SST_sessions', 'VIP_sessions']:
     print('')
     print('- N=%i sessions' % len(Optotagging[Key]))
     print(Key, ' ---> %i positive units' % np.sum([len(x) for x in Optotagging[Key.replace('sessions', 'positive_units')]]))
@@ -337,5 +361,12 @@ for Key in ['PV_sessions', 'SST_sessions']:
     print('     %.0f +/- %.0f positive units' % (\
         np.mean([len(x) for x in Optotagging[Key.replace('sessions', 'negative_units')]]),
         np.std([len(x) for x in Optotagging[Key.replace('sessions', 'negative_units')]])))
+
+# %%
+session = cache.get_session_data(VIP_sessions.index[0])
+# %%
+stim_table = session.get_stimulus_table()
+# %%
+np.unique(stim_table['stimulus_name'])
 
 # %%
