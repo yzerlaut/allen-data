@@ -5,8 +5,10 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from scipy import stats
-
+from scipy.ndimage import gaussian_filter1d
 import sys
+sys.path.append('..')
+import plot_tools as pt
 
 # from analysis import spikingResponse # custom object of trial-aligned spiking reponse
 # from analysis import pt, crosscorrel # plot_tools and CC-function
@@ -38,8 +40,12 @@ all = True
 
 tstart, tstop, dt = -1, 301, 1e-3
 t = tstart+dt*np.arange(int((tstop-tstart)/dt))
+PROTOCOLS = ['natural_movie_one_more_repeats',
+             'natural_movie_two',
+             'natural_movie_one',
+             'natural_movie_three']
 
-if True:
+if False:
     # turn True to re-run the analysis
     
     # load data from API
@@ -67,10 +73,8 @@ if True:
             # fetch summary statistics 
             analysis_metrics = cache.get_unit_analysis_metrics_by_session_type(session.session_type)
             
-            for protocol in ['natural_movie_one_more_repeats',
-                             'natural_movie_two',
-                             'natural_movie_one',
-                             'natural_movie_three']:
+            for protocol in PROTOCOLS:
+
                 if protocol in np.unique(stim_table.stimulus_name):
                     cond = (stim_table.stimulus_name==protocol)
                     # get the number of repeats
@@ -96,5 +100,677 @@ if True:
                         np.save(os.path.join('data', key,
                                              '%s_unit_%i.npy' % (protocol, unit)),
                                 Data)
+
+# %%i
+
+class spikingResponse:
+    
+    def __init__(self, stim_table, spike_times, t,
+                 filename=None):
+        
+        if filename is not None:
+            
+            self.load(filename)
+            
+        else:
+            
+            self.build(stim_table, spike_times, t)
+            
+        
+    def build(self, stim_table, spike_times, t):
+        
+        duration = np.mean(stim_table.duration) # find stim duration
+        self.t = t
+        
+        self.time_resolution = self.t[1]-self.t[0]
+
+        self.spike_matrix = np.zeros( (len(stim_table.index.values),
+                                       len(self.t)) , dtype=bool)
+        self.keys = ['spike_matrix', 't']
+
+        for key in stim_table:
+            
+            setattr(self, key, np.array(getattr(stim_table, key)))
+            self.keys.append(key)
+
+        for trial_idx, trial_start in enumerate(stim_table.start_time.values):
+
+            in_range = (spike_times > (trial_start + self.t[0])) * \
+                       (spike_times < (trial_start + self.t[-1]))
+
+            binned_times = ((spike_times[in_range] -\
+                             (trial_start + self.t[0])) / self.time_resolution).astype('int')
+            self.spike_matrix[trial_idx, binned_times] = True       
+            
+    def get_rate(self,
+                 cond=None,
+                 smoothing=5e-3):
+        if cond is None:
+            cond = np.ones(self.spike_matrix.shape[0], dtype=bool)
+            
+        iSmooth = int(smoothing/self.time_resolution)
+        if iSmooth>=1:
+            return gaussian_filter1d(self.spike_matrix[cond,:].mean(axis=0) / self.time_resolution,
+                                     iSmooth)
+        else:
+            return self.spike_matrix[cond,:].mean(axis=0) / self.time_resolution
+    
+    def save(self, filename):
+        D = {'time_resolution':self.time_resolution, 'keys':self.keys}
+        for key in self.keys:
+            D[key] = getattr(self, key)
+        np.save(filename, D)
+    
+    def load(self, filename):
+        D = np.load(filename, allow_pickle=True).item()
+        for key in D['keys']:
+            setattr(self, key, np.array(D[key]))
+        self.keys = D['keys']
+        self.time_resolution = D['time_resolution']
+        
+    def plot(self, 
+             cond = None,
+             ax1=None, ax2=None,
+             smoothing=5e-3, 
+             trial_subsampling=1,
+             color='k', ms=1):
+
+        if cond is None:
+            cond = np.ones(self.spike_matrix.shape[0], dtype=bool)
+
+        if not (ax1 is not None and ax2 is not None):
+            fig = plt.figure(figsize=(1.2,2))
+            plt.subplots_adjust(left=0.1, top=0.8, right=0.95)
+            ax1 = plt.subplot2grid((5, 1), (0, 0), rowspan=3)
+            ax2 = plt.subplot2grid((5, 1), (3, 0), rowspan=2)
+        else:
+            fig = None
+            
+        for i, t in enumerate(\
+                        np.arange(self.spike_matrix.shape[0])[cond][::trial_subsampling]):
+            spike_cond = self.spike_matrix[t,:]==1
+            ax1.plot(self.t[spike_cond],
+                     self.spike_matrix[t,:][spike_cond]+i, '.', ms=ms, color=color)
+            
+        ax2.fill_between(self.t, 0*self.t, self.get_rate(cond=cond, smoothing=smoothing), color=color)
+        ax1.set_ylabel('trial #')
+        ax2.set_ylabel('rate (Hz)')
+        ax2.set_xlabel('time (s)')
+        pt.set_common_xlims([ax1,ax2])
+
+        return fig, [ax1, ax2]
+
+
+def crosscorrel(Signal1, Signal2, tmax, dt):
+    """
+    argument : Signal1 (np.array()), Signal2 (np.array())
+    returns : np.array()
+    take two Signals, and returns their crosscorrelation function 
+
+    CONVENTION:
+    --------------------------------------------------------------
+    when the peak is in the future (positive t_shift)
+    it means that Signal2 is delayed with respect to Signal 1
+    check with:
+    ```
+    t = np.linspace(0,1,200)
+    Signal1, Signal2 = 0*t, 0*t
+    Signal1[(t>0.4) & (t<0.6)] = 1. # first
+    Signal2[(t>0.5) & (t<0.7)] = 1. # second
+    # compute
+    CCF, time_shift = crosscorrel(Signal1, Signal2, 1, t[1]-t[0])
+    # plot
+    plt.plot(time_shift, CCF, color='tab:red')
+    ```
+    --------------------------------------------------------------
+    """
+    if len(Signal1)!=len(Signal2):
+        print('Need two arrays of the same size !!')
+        
+    steps = int(tmax/dt) # number of steps to sum on
+    time_shift = dt*np.concatenate([-np.arange(1, steps)[::-1], np.arange(steps)])
+    CCF = np.zeros(len(time_shift))
+    for i in np.arange(steps):
+        ccf = np.corrcoef(Signal1[:len(Signal1)-i], Signal2[i:])
+        CCF[steps-1+i] = ccf[0,1]
+    for i in np.arange(steps):
+        ccf = np.corrcoef(Signal2[:len(Signal1)-i], Signal1[i:])
+        CCF[steps-1-i] = ccf[0,1]
+    return CCF, time_shift
+
+# %% [markdown]
+# # 3) Showing an example session response
+
+# %%
+examples = {'PV':{'sessionID':0, 
+                  'positive_color':'tab:red', 
+                  'negative_color':'dimgrey'},
+            'SST':{'sessionID':2, 
+                   'positive_color':'tab:orange', 
+                   'negative_color':'silver'},
+            'VIP':{'sessionID':0, 
+                   'positive_color':'tab:purple', 
+                   'negative_color':'silver'}}
+
+rate_smoothing = 10e-3
+tmax = 3
+verbose = True
+
+for c, cellType in enumerate(examples.keys()):
+
+    fig, AX = pt.figure(axes_extents=[[[1,1]],[[1,2]],[[1,1]],[[1,2]]], 
+                        hspace=0.1, ax_scale=(1.6,.55))
+    sessionID = examples[cellType]['sessionID']
+    fig.suptitle(\
+            'session %i\n' % Optotagging['%s_sessions' % cellType][sessionID], 
+                 fontsize=6)
+    print(cellType, ' -> sessionID: ', 
+          Optotagging['%s_sessions' % cellType][sessionID])
+
+    for k, key in enumerate(['positive', 'negative']):
+        rates = []
+        for u, unit in enumerate(Optotagging['%s_%s_units' % (cellType, key)][sessionID]):
+            for protocol in PROTOCOLS:
+                filename = os.path.join('data', cellType, 
+                                        '%s_unit_%i.npy' % (protocol, unit))
+                if os.path.isfile(filename):
+                    if verbose:
+                        print('[ok]', cellType, key, protocol, unit, 'found')
+                    spikeResp = spikingResponse(None, None, None, filename=filename)
+                    cond = spikeResp.t<tmax
+                    rates.append(spikeResp.get_rate(smoothing=rate_smoothing)[cond])
+
+                    # showing spikes on the first repeat only
+                    sCond = spikeResp.spike_matrix[0,:] & cond
+                    AX[2*k].scatter(spikeResp.t[sCond], u+0*spikeResp.t[sCond], 
+                                    s=0.05,
+                                    color=examples[cellType]['%s_color'%key])
+                elif verbose:
+                    print('[X] ', cellType, key, protocol, unit, 'missing')
+        print('number of repeats:', spikeResp.spike_matrix.shape[0], '  ', key, cellType)
+
+        try:
+            AX[2*k+1].fill_between(spikeResp.t[cond], 
+                                0*spikeResp.t[cond], np.mean(rates, axis=0),
+                                alpha=.7, lw=0,
+                                color=examples[cellType]['%s_color'%key])
+            pt.annotate(AX[2*k], '%i units' % len(rates), (1,0.5),
+                                color=examples[cellType]['%s_color'%key])
+        except BaseException as be:
+            pass
+    for ax in AX:
+        ax.axis('off')
+    pt.draw_bar_scales(AX[1], Xbar=0.2, Xbar_label='200ms', Ybar=10, Ybar_label='10Hz')
+    pt.draw_bar_scales(AX[3], Xbar=0.2, Xbar_label='200ms', Ybar=5, Ybar_label='5Hz')
+    pt.set_common_xlims(AX)
+    fig.savefig('figures/%s-session-natural-movie.svg' % cellType)
+
+# %% [markdown]
+# # 4) Compute the time-varying rate of the "+" and "-" units 
+
+# %%
+# loop over frames to build the time course
+
+rate_smoothing = 10e-3
+
+PROTOCOLS = {'natural_movie_three':['natural_movie_three',
+                                    ''],
+             'natural_movie_one':['natural_movie_one_more_repeats',
+                                  'natural_movie_one']}
+
+for p in PROTOCOLS:
+    
+    protocols = PROTOCOLS[p]
+
+    RATES = {}
+    for k, key, color in zip(range(3), 
+                             ['PV', 'SST', 'VIP'], 
+                             ['tab:red', 'tab:orange', 'tab:purple']):
+        RATES[key+'_posUnits'] = []
+        RATES[key+'_negUnits'] = []
+        for sessionID in range(len(Optotagging[key+'_sessions'])):
+            
+            if len(Optotagging[key+'_positive_units'][sessionID])>1:
+                # only sessions with phototagged units
+                
+                for u, rates, units, c in zip(range(2), [RATES[key+'_posUnits'], RATES[key+'_negUnits']],
+                                       [Optotagging[key+'_positive_units'][sessionID], Optotagging[key+'_negative_units'][sessionID]],
+                                       [color, 'tab:grey']):
+                    
+                    for unit in units:
+                        filename0 = os.path.join('data', key, 
+                                                '%s_unit_%i.npy' % (protocols[0], unit))
+                        filename1 = os.path.join('data', key, 
+                                                '%s_unit_%i.npy' % (protocols[1], unit))
+                        if os.path.isfile(filename0):
+                            spikeResp = spikingResponse(None, None, None, filename=filename0)
+                            rates.append(spikeResp.get_rate(smoothing=rate_smoothing))
+                        elif os.path.isfile(filename1):
+                            spikeResp = spikingResponse(None, None, None, filename=filename1)
+                            rates.append(spikeResp.get_rate(smoothing=rate_smoothing))
+                            
+    RATES['time'] = spikeResp.t
+    np.save(os.path.join('data', 'RATES_%s.npy' % p), RATES)
+
+# %%
+RATES = np.load(os.path.join('data', 'RATES_natural_movie_one.npy'),
+                allow_pickle=True).item()
+
+fig, AX = pt.figure(axes=(3,4), hspace=0.1, ax_scale=(1.3,1))
+fig.suptitle('movie #1, all units pooled')
+
+tCond = RATES['time']<4
+
+for k, key, color in zip(range(3), 
+                         ['PV', 'SST', 'VIP'], 
+                         ['tab:red','tab:orange', 'tab:purple']):
+    for u, rates, c in zip(range(4), 
+                           [RATES[key+'_posUnits'], RATES[key+'_negUnits'],
+                           [RATES[key+'_negUnits'][i] for i in np.random.choice(np.arange(len(RATES[key+'_negUnits'])), len(RATES[key+'_posUnits']), replace=False)],
+                           [RATES[key+'_negUnits'][i] for i in np.random.choice(np.arange(len(RATES[key+'_negUnits'])), len(RATES[key+'_posUnits']), replace=False)]],
+                           [color, 'tab:grey', 'tab:grey', 'tab:grey']):  
+        if len(rates)>0:
+            pt.plot(RATES['time'][tCond], np.mean(rates, axis=0)[tCond],
+                    #sy=0.*np.std(rates, axis=0)[tCond],
+                    ax=AX[u][k], color=c)
+            pt.annotate(AX[u][k], 'n=%i' % len(rates), (1,1), va='top', ha='right', color=c)
+            pt.set_plot(AX[u][k], ['left','bottom'] if u==4 else ['left'], 
+                        ylabel='rate (Hz)', xlabel='time (s)' if u==4 else '')
+
+# %%
+RATES = np.load(os.path.join('data', 'RATES_natural_movie_one.npy'),
+                allow_pickle=True).item()
+
+for k, key in enumerate(['PV', 'SST', 'VIP']):
+    mRate = [np.mean(r) for r in RATES[key+'_posUnits']]
+    print(' - "%s" firing rate: %.1f +/- %.1f Hz ' % (key, np.mean(mRate), np.std(mRate)))
+
+# %% [markdown]
+# # 5) Compute the Cross.-Correlation and its decay
+
+# %%
+# Exponential fit to quantify the decay
+
+from scipy.optimize import minimize
+
+def gaussian(t, X):
+    return (1-X[2])*np.exp(-(t-X[1])**2/2/X[0]**2)+X[2]
+
+def lorentzian(t, X):
+    return  1./(1+(t/X[0])**2)
+
+Func = lorentzian # Change here !
+def fit_half_width(shift, array):
+    def to_minimize(X):
+        return np.sum(np.abs(Func(shift, X)-array))
+    res = minimize(to_minimize, [0.3],
+                   bounds=[[0.1, 0.7]], method='L-BFGS-B')
+    return res.x
+
+def norm(trace):
+    return (trace-np.min(trace))/(np.max(trace)-np.min(trace))
+
+
+# %%
+
+RATES = np.load(os.path.join('data', 'RATES_natural_movie_one.npy'),
+                allow_pickle=True).item()
+
+fig1, [ax11, ax12] = plt.subplots(1, 2, figsize=(2.5,0.9))
+fig1.subplots_adjust(wspace=2, top=0.85)
+fig1.suptitle('movie #1, all units pooled\n')
+fig2, ax2 = pt.figure(figsize=(1.,0.85))
+fig3, ax3 = plt.subplots(1, figsize=(1.3, 0.8))
+fig2b, ax2b = pt.figure(figsize=(1.,0.85))
+
+np.random.seed(5)
+
+for k, key, pos_color, neg_color in zip(range(3),
+                                        ['SST', 'PV', 'VIP'], 
+                                        ['tab:orange', 'tab:red', 'tab:purple'],
+                                        ['silver', 'dimgrey', 'silver']):
+
+    neg_rates_All = np.mean(RATES['%s_negUnits' % key], axis=0)
+
+    # rates of positive units
+    pos_rates = np.mean(RATES['%s_posUnits' % key], axis=0)
+    # rates of negative units subsampled to the number of positive units (to have a fair comp)
+    neg_rates = np.mean([RATES[key+'_negUnits'][i] for i in np.random.choice(np.arange(len(RATES[key+'_negUnits'])), len(RATES[key+'_posUnits']), replace=False)], axis=0)
+
+    pt.annotate(ax2, k*'\n'+'n=%iunits' % len(RATES['%s_posUnits' % key]), (1.3,1),
+                va='top', ha='right', color=pos_color, fontsize=6)
+    #pt.annotate(ax3, k*'\n'+'n=%iunits' % len(RATES['%s_negUnits' % key]), (1.3,1),
+    #            va='top', ha='right', color=neg_color, fontsize=6)
+    
+    CCF1, time_shift = crosscorrel(neg_rates_All-np.mean(neg_rates_All), neg_rates-np.mean(neg_rates),
+                                  1.4, RATES['time'][1]-RATES['time'][0])
+    #ax2.plot(time_shift, CCF1, color=neg_color)
+    # ax3.plot(time_shift, CCF/np.max(CCF), color=neg_color)
+    ax3.plot(time_shift, norm(CCF1), color=neg_color)
+    ax11.bar([2*k], [CCF1[int(len(time_shift)/2)]], color=neg_color)
+    
+    # fit for half width
+    fit_cond = (time_shift>0) #& (time_shift<1.5)
+    
+    tau0 = fit_half_width(time_shift[fit_cond], norm(CCF1[fit_cond]))[0]
+    ax12.bar([2*k+1], [tau0], color=neg_color)
+
+
+    CCF2, time_shift = crosscorrel(neg_rates_All-np.mean(neg_rates_All), pos_rates-np.mean(pos_rates),
+                                  1.4, RATES['time'][1]-RATES['time'][0])
+    ax2.plot(time_shift, CCF2, color=pos_color)
+    # ax3.plot(time_shift, CCF/np.max(CCF), color=pos_color)
+    ax3.plot(time_shift, norm(CCF2), color=pos_color)
+
+    ax11.bar([2*k+1], [CCF2[int(len(time_shift)/2)]], color=pos_color)
+    
+    # gaussian fit for width
+    tau = fit_half_width(time_shift[fit_cond], norm(CCF2[fit_cond]))[0]
+    ax12.bar([2*k], [tau], color=pos_color)
+    #ax13.bar([k], [1e3*(tau-tau0)], color=pos_color)
+    ax2b.plot(time_shift[fit_cond], 
+              Func(time_shift[fit_cond], fit_half_width(time_shift[fit_cond], norm(CCF2[fit_cond]))), color=pos_color)
+    ax2b.plot(time_shift[fit_cond],
+              Func(time_shift[fit_cond], fit_half_width(time_shift[fit_cond], norm(CCF1[fit_cond]))), color=neg_color)
+    
+pt.set_plot(ax11, ['left'], #yticks=[0,0.2,0.4],
+            ylabel='corr. coeff.')
+pt.set_plot(ax12, ['left'], yticks=[0,0.2,0.4],
+            ylabel=u'\u00bd' + ' width (s)')
+pt.set_plot(ax2, xlabel='jitter (s)', 
+            ylabel='corr. coef.',
+            yticks=[0.1,0.4,0.7],
+            xlim=[-0.95,1.3], xticks=[-0.9,0,0.9])
+for ax in [ax3,ax2b]:
+    pt.set_plot(ax, xlabel='jitter (s)', title='fits' if ax==ax2b else '',
+                ylabel='norm. corr.\n(peak-baseline)',
+                xlim=[-0.2,1.5], yticks=[0,1])
+
+# %% [markdown]
+# # 6) Same but analyzing per session
+
+# %% [markdown]
+# ## 6.1) compute the time-varying rate
+
+# %%
+PROTOCOLS = {'natural_movie_three':['natural_movie_three'],
+             'natural_movie_one':['natural_movie_one', 'natural_movie_one_more_repeats']}
+
+# %%
+# loop over frames to build the time course
+np.random.seed(0)
+
+Nfactor = 3 # factor to increase the subsampling of negative cells
+for p in PROTOCOLS:
+    
+    protocols = PROTOCOLS[p]
+    
+    RATES = {}
+    for k, cellType, color in zip(range(3),
+                             ['PV', 'SST', 'VIP'],
+                             ['tab:red','tab:orange', 'tab:purple']):
+
+        RATES['%s_posUnits' % cellType] = []
+        for ii in range(10):
+            RATES['%s_negUnits_subsampled%i' % (cellType,ii)] = []
+        RATES['%s_negUnits' % cellType] = []
+        RATES['%s_n_per_session' % cellType] = []
+
+        for sessionID in range(len(Optotagging[cellType+'_sessions'])):
+
+            posUnits = Optotagging[cellType+'_positive_units'][sessionID]
+            negUnits = Optotagging[cellType+'_negative_units'][sessionID]
+            posRates, negRates = [], []
+
+            for protocol in protocols:
+
+                for units, rates in zip([negUnits, posUnits], [negRates, posRates]):
+                    for unit in units:
+                        filename = os.path.join('data', cellType, 
+                                                '%s_unit_%i.npy' % (protocol, unit))
+                        if os.path.isfile(filename):
+                            spikeResp = spikingResponse(None, None, None, filename=filename)
+                            rates.append(spikeResp.get_rate(smoothing=5e-3))
+                        else:
+                            pass
+                            #print(filename, 'missing')
+
+            if (len(posRates)>1):
+                # only if more than one positive units
+                RATES['%s_posUnits' % cellType].append(np.mean(posRates, axis=0))
+                RATES['%s_negUnits' % cellType].append(np.mean(negRates, axis=0))
+                for ii in range(10):
+                    RATES['%s_negUnits_subsampled%i' % (cellType,ii)].append(\
+                        np.mean([negRates[nn] for nn in np.random.choice(np.arange(len(negRates)),
+                                                                         min([Nfactor*len(posRates), len(negRates)]),
+                                                                         replace=False)], axis=0))
+                RATES['%s_n_per_session' % cellType].append(len(posRates))
+            else:
+                print('session %i no ' % sessionID, cellType, p)
+                
+    RATES['time'] = spikeResp.t
+    np.save(os.path.join('data', 'RATES_per_session_%s.npy' % p), RATES)
+
+# %% [markdown]
+# ## 6.2) Compute the cross-correlation
+
+# %%
+CCs = {'extent':1.5, 'subsampling':10}
+
+for cellType in ['PV', 'SST', 'VIP']:
+    for u in ['pos', 'neg']:
+        CCs[cellType+'_%sUnits' % u] = []
+    CCs['%s_n_per_session' % cellType] = []
+    for ii in range(10):
+        CCs['%s_negUnits_subsampled%i' % (cellType,ii)] = []
+    
+for p in PROTOCOLS:
+    
+    RATES = np.load(os.path.join('data', 'RATES_per_session_%s.npy' % p),
+                    allow_pickle=True).item()
+        
+    for k, cellType, color in zip(range(3), 
+                                  ['PV', 'SST', 'VIP'], 
+                                  ['tab:red','tab:orange','tab:purple']):
+
+        for u in ['pos', 'neg']:
+            
+            # loop over session:
+            for session in range(len(RATES['%s_n_per_session' % cellType])):
+                CCs[cellType+'_%sUnits' % u].append(\
+                            crosscorrel(RATES['%s_negUnits' % cellType][session][::CCs['subsampling']],
+                                        RATES['%s_%sUnits' % (cellType,u)][session][::CCs['subsampling']],
+                                        CCs['extent'],
+                                        CCs['subsampling']*(RATES['time'][1]-RATES['time'][0]))[0])
+                CCs['%s_n_per_session' % cellType].append(RATES['%s_n_per_session' % cellType][session])
+    if 'dt' not in CCs:
+        CCs['dt'] = CCs['subsampling']*(RATES['time'][1]-RATES['time'][0])
+                
+# just to get the time shift
+_, CCs['time_shift'] = crosscorrel(0*RATES['time'][::CCs['subsampling']],
+                                   0*RATES['time'][::CCs['subsampling']], CCs['extent'], CCs['dt'])
+
+np.save(os.path.join('data', 'CC_per_session_natural_movies.npy'), CCs)
+
+# %% [markdown]
+# ## 6.3) Analyze and plot
+
+# %%
+from scipy import stats
+import itertools
+
+CCs = np.load(os.path.join('data', 'CC_per_session_natural_movies.npy'),
+              allow_pickle=True).item()
+
+fig11, ax11 = pt.figure(figsize=(.6,1.))
+fig12, ax12 = pt.figure(figsize=(0.85,0.85))
+fig2, ax2 = plt.subplots(1, figsize=(1.3, 0.8))
+fig2b, ax2b = plt.subplots(1, figsize=(1.3, 0.8))
+fig3, ax3 = plt.subplots(1, figsize=(1.3, 0.8))
+
+i0 = int(len(CCs['time_shift'])/2)+1 # index of 0-lag correl
+
+for k, cellType, color1, color2 in zip(range(3),
+                                  ['PV', 'SST', 'VIP'],
+                                  ['tab:red','tab:orange', 'tab:purple'],
+                                  ['tab:grey', 'lightgray', 'tab:grey']):
+
+    fit_cond = np.arange(i0+1, len(CCs['time_shift']))
+    
+    # 0-lag correl of positive units
+    CCs['%s_pos0CC' % cellType] = np.array([cc[i0] for cc in CCs['%s_posUnits' % cellType]])
+    ax11.bar([k], [np.mean(CCs['%s_pos0CC' % cellType])], yerr=[stats.sem(CCs['%s_pos0CC' % cellType])], color=color1)
+
+    # positive CCs
+    CCs['%s_posWidths' % cellType] = np.array([fit_half_width(CCs['time_shift'][fit_cond], norm(CCF[fit_cond]))[0]\
+                                                    for CCF in CCs['%s_posUnits' % cellType]])
+    ax12.bar([k], [np.mean(CCs['%s_posWidths' % cellType])],  yerr=[stats.sem(CCs['%s_posWidths' % cellType])], color=color1)
+
+    #fit_cond = CCs['time_shift']>0.01
+    # negative CCs - Autocorrelations
+    CCs['%s_negWidths' % cellType] = np.array([fit_half_width(CCs['time_shift'][fit_cond], norm(CCF[fit_cond]))[0]\
+                                                    for CCF in CCs['%s_negUnits' % cellType]])
+    ax12.bar([k+2], [np.mean(CCs['%s_negWidths' % cellType])],  yerr=[stats.sem(CCs['%s_negWidths' % cellType])], color=color2)
+
+    mean = np.mean(CCs[cellType+'_posUnits'], axis=0)
+    pt.plot(CCs['time_shift'], mean/np.max(mean),
+            sy=stats.sem(CCs[cellType+'_posUnits'], axis=0)/np.max(mean),
+            color=color1, ax=ax3)
+    
+    pt.plot(CCs['time_shift'], np.mean(CCs[cellType+'_negUnits'], axis=0), 
+            sy=stats.sem(CCs[cellType+'_negUnits'], axis=0)/np.max(mean),
+            color=color2, ax=ax2)
+    pt.plot(CCs['time_shift'], np.mean(CCs[cellType+'_posUnits'], axis=0), 
+            sy=stats.sem(CCs[cellType+'_posUnits'], axis=0)/np.max(mean),
+            color=color1, ax=ax2)
+    
+    pt.plot(CCs['time_shift'], norm(np.mean(CCs[cellType+'_posUnits'], axis=0)),
+            color=color1, lw=1, ax=ax2b)
+    pt.plot(CCs['time_shift'], norm(np.mean(CCs[cellType+'_negUnits'], axis=0)),
+            color=color2, lw=1, ax=ax2b)
+
+# statistic
+pt.annotate(ax11, 'PV+ SST+, p=%.1e' % stats.mannwhitneyu(CCs['PV_pos0CC'], CCs['SST_pos0CC']).pvalue,
+            (1., 1.), va='top', fontsize=6)
+
+for gt, cell in itertools.product(['PV', 'SST', 'VIP'], ['pos', 'neg']):
+    print(gt, cell, '%.0f +/- %.0f' % (1e3*np.mean(CCs['%s_%sWidths' % (gt,cell)]),
+                                       1e3*stats.sem(CCs['%s_%sWidths' % (gt,cell)])) )
+    
+pt.annotate(ax12, '\n PV- SST-, p=%.0e' % stats.mannwhitneyu(CCs['PV_negWidths'], CCs['SST_negWidths']).pvalue,
+            (1., 1.), va='top', fontsize=6)
+pt.annotate(ax12, '\n\n PV+ SST+, p=%.0e' % stats.mannwhitneyu(CCs['PV_posWidths'], CCs['SST_posWidths']).pvalue,
+            (1., 1.), va='top', fontsize=6)
+pt.annotate(ax12, '\n\n\n PV+ PV-, p=%.0e\n' % stats.mannwhitneyu(CCs['PV_posWidths'], CCs['PV_negWidths']).pvalue,
+            (1., 1.), va='top', fontsize=6)
+pt.annotate(ax12, '\n\n\n\n SST+ SST-, p=%.0e\n' % stats.mannwhitneyu(CCs['SST_posWidths'], CCs['SST_negWidths']).pvalue,
+            (1., 1.), va='top', fontsize=6)
+
+pt.set_plot(ax11, ['left'], 
+            ylabel='corr. coeff.')
+pt.set_plot(ax12, ['left'], yticks=np.arange(3)*0.3,
+            ylabel='width$^{+}$ (s)')
+pt.set_plot(ax2, xlabel='jitter (s)',
+            ylabel='corr. coefs', xlim=[-1.5,1.5])
+pt.set_plot(ax2b, xlabel='jitter (s)', yticks=[0,1],
+            ylabel='corr. coef\n(norm.)', xlim=[-1.5,1.5])
+pt.set_plot(ax3, xlabel='jitter (s) of "+" units ', 
+            ylabel='corr. coefs\n(peak norm.)',
+            xlim=[-1.5,1.5], yticks=[0,1])
+
+# %%
+import pandas as pd
+PV = pd.DataFrame()
+for key in ['PV_negWidths', 'PV_posWidths']:
+    PV[key] = CCs[key]
+PV
+
+# %%
+SST = pd.DataFrame()
+for key in ['SST_negWidths', 'SST_posWidths']:
+    SST[key] = CCs[key]
+stats.kruskal(SST['SST_negWidths'], SST['SST_posWidths'])
+SST
+
+# %%
+from scikit_posthocs import posthoc_dunn
+print(stats.kruskal(PV['PV_posWidths'], PV['PV_negWidths'], SST['SST_posWidths'], SST['SST_negWidths']))
+posthoc_dunn([PV['PV_posWidths'], PV['PV_negWidths'], SST['SST_posWidths'], SST['SST_negWidths']], 
+             sort=False, p_adjust='bonferroni')
+
+# %%
+# posthoc_dunn?
+
+# %% [markdown]
+# # Exporting Negative-Units Rates as Inputs to Stimulation
+
+# %%
+RATES = np.load(os.path.join('data', 'RATES_natural_movie_one.npy'),
+                allow_pickle=True).item()
+
+fig1, ax = pt.figure(figsize=(2,1), left=0.2)
+
+tlim = [-1.1, 20]
+cond = (RATES['time']>tlim[0]) & (RATES['time']<tlim[1])
+
+for k, key, pos_color, neg_color in zip(range(3),
+                                        ['SST', 'PV', 'VIP'], 
+                                        ['tab:orange', 'tab:red', 'tab:purple'],
+                                        ['silver', 'dimgrey', 'silver']):
+
+    neg_rates = np.mean(RATES['%s_negUnits' % key], axis=0)
+    pt.annotate(ax, 2*k*'\n'+'%.1fHz' % np.std(4.*neg_rates), (0,1),
+                ha='right', va='top', color=neg_color)
+    ax.plot(RATES['time'][cond], (neg_rates[cond]-np.mean(neg_rates))/np.std(neg_rates), 
+            color=neg_color)
+    pos_rates = np.mean(RATES['%s_posUnits' % key], axis=0)
+    pt.annotate(ax, (2*k+1)*'\n'+'%.1fHz' % np.std(4.*pos_rates), (0,1),
+                ha='right', va='top', color=pos_color)
+    ax.plot(RATES['time'][cond], (pos_rates[cond]-np.mean(pos_rates))/np.std(pos_rates), 
+            color=pos_color)
+
+ax.plot([tlim[1],tlim[1]-1], [8, 8], 'k-')
+ax.annotate('1s',(tlim[1]-.5,8.5), ha='center') 
+ax.plot(-1*np.ones(2), [4, 8], 'k-')
+pt.set_plot(ax, [], xlim=tlim)
+
+
+# %%
+RATES = np.load(os.path.join('data', 'RATES_natural_movie_one.npy'),
+                allow_pickle=True).item()
+
+fig1, ax = pt.figure(ax_scale=(2,1), left=0.2)
+
+tlim = [-1.1, 10]
+cond = (RATES['time']>tlim[0]) & (RATES['time']<tlim[1])
+
+neg_rates = 0.5*(\
+        np.mean(RATES['PV_negUnits'], axis=0)+\
+        np.mean(RATES['SST_negUnits'], axis=0))
+scaled_neg_rates = (neg_rates-np.mean(neg_rates))/np.std(neg_rates)
+
+
+pt.annotate(ax, '%.1fHz' % np.std(4.*neg_rates), (0,1),
+            ha='right', va='top', color=neg_color)
+
+ax.fill_between(RATES['time'][cond], 
+                np.min(scaled_neg_rates),
+                scaled_neg_rates[cond],
+                color=neg_color, lw=0, alpha=.5)
+
+for k, key, pos_color in zip(range(3),
+                            ['SST', 'PV', 'VIP'], 
+                            ['tab:orange', 'tab:red', 'tab:purple']):
+
+    pos_rates = np.mean(RATES['%s_posUnits' % key], axis=0)
+    pt.annotate(ax, (k+1)*'\n'+'%.1fHz' % np.std(4.*pos_rates), (0,1),
+                ha='right', va='top', color=pos_color)
+    ax.plot(RATES['time'][cond], (pos_rates[cond]-np.mean(pos_rates))/np.std(pos_rates), 
+            color=pos_color)
+
+ax.plot([tlim[1],tlim[1]-1], [8, 8], 'k-')
+ax.annotate('1s',(tlim[1]-.5,8.5), ha='center') 
+ax.plot(-1*np.ones(2), [4, 8], 'k-')
+pt.set_plot(ax, [], xlim=tlim)
 
 # %%
