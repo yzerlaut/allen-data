@@ -74,7 +74,7 @@ class Data:
 
 
 
-for session_id in sessions.index[:1]:
+for session_id in sessions.index:
 
      sample_index = 0 # we restart the sample index
      tic = time.time()
@@ -153,7 +153,7 @@ for session_id in sessions.index[:1]:
                          # self.Nchannels_V1 = len(self.lfp_slice_V1.channel) # store number of channels with LFP in V1
                          # self.lfp_sampling_rate = session.probes.lfp_sampling_rate[probe_id] # keeping track of sampling rate
 
-          data.save()
+               data.save()
      print('session %s: %i samples, data successfully loaded in %.1fs' %\
                               (session_id, sample_index, time.time()-tic))
 
