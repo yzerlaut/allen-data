@@ -1,5 +1,6 @@
 # %%
-import os, sys
+import os, sys, time
+import numpy as np
 
 from allensdk.brain_observatory.ecephys.ecephys_project_cache\
       import EcephysProjectCache
@@ -75,76 +76,90 @@ class Data:
 
 for session_id in sessions.index[:1]:
 
-    sample_index = 0 # we restart the sample index
+     sample_index = 0 # we restart the sample index
+     tic = time.time()
 
-    session = cache.get_session_data(session_id)
-    stim_table = session.get_stimulus_table()
-    spont_periods = stim_table[stim_table['stimulus_name']=='spontaneous']
+     session = cache.get_session_data(session_id)
+     stim_table = session.get_stimulus_table()
+     spont_periods = stim_table[stim_table['stimulus_name']=='spontaneous']
 
-    for tstart, tstop in zip(spont_periods.start_time,
-                             spont_periods.stop_time):
+     for tstart, tstop in zip(spont_periods.start_time,
+          spont_periods.stop_time):
 
-        if (tstop-tstart)>120:
-            # more than 2min spont activity
+          if (tstop-tstart)>120:
+          # more than 2min spont activity
 
-            sample_index += 1
+               sample_index += 1
 
-            data = Data(session_id, sample_index, tstart, tstop)
+               data = Data(session_id, sample_index, tstart, tstop)
 
-            # let's fetch the running speed
-            cond = (session.running_speed.end_time.values>tstart) &\
-                (session.running_speed.start_time.values<tstop)
+               # let's fetch the running speed
+               cond = (session.running_speed.end_time.values>tstart) &\
+                              (session.running_speed.start_time.values<tstop)
 
-            # t_running_speed = .5*(session.running_speed.start_time.values[cond]+\
-            #                            session.running_speed.end_time.values[cond])
-            data.running_speed = session.running_speed.velocity[cond]
+               data.running_speed = session.running_speed.velocity[cond]
 
-            pupil = session.get_pupil_data()
-            if pupil is not None:
-                data.pupil_area = np.pi*pupil['pupil_height'].values/2.*pupil['pupil_width'].values/2.
+               pupil = session.get_pupil_data()
+               if pupil is not None:
+                    data.pupil_area = \
+                         np.pi*pupil['pupil_height'].values/2.*pupil['pupil_width'].values/2.
 
-            # now loop over probes / structure
-            for loc in STRUCTURES:
+               # now loop over probes / structure
+               for loc in STRUCTURES:
 
-                # let's fetch the isolated single units in V1
-                units = session.units[\
+                    # let's fetch the isolated single units in V1
+
+                    # TRY TO REMOVE THE QUALITY METRICS THST COULD BIAS TOWARD HIGH FIRING RATES
+                    # WITH
+                    #     amplitude_cutoff_maximum = np.inf,
+                    #     presence_ratio_minimum = -np.inf,
+                    #     isi_violations_maximum = np.inf
+
+                    units = session.units[\
                     session.units.ecephys_structure_acronym == loc]
-                setattr(data, 'raster_%s' % loc, [])
-                for i in units.index:
-                    cond = (session.spike_times[i]>=tstart)\
-                          & (session.spike_times[i]<tstop)
-                    getattr(data, 'raster_%s'%loc).append(\
-                         session.spike_times[i][cond])
 
-                # let's fetch the corresponding probe
-                probe_id = units.probe_id.values[0]
+                    if len(units)>0:
 
-                # -- let's fetch the lfp data for that probe and that session --
-                # let's fetch the all the channels falling into V1 domain
-                channel_ids = session.channels[\
-                     (session.channels.probe_id == probe_id) & \
-                    (session.channels.ecephys_structure_acronym.isin([loc]))\
-                                                ].index.values
+                         setattr(data, 'raster_%s' % loc, [])
+                         for i in units.index:
+                              cond = (session.spike_times[i]>=tstart)\
+                                   & (session.spike_times[i]<tstop)
+                              getattr(data, 'raster_%s'%loc).append(\
+                                   session.spike_times[i][cond])
 
-                ############
-                # FIND THE CHANNEL THAT HAS MOST pLFP POWER !!
-                ############
-                # limit LFP to desired times and channels
+                         # let's fetch the corresponding probe
+                         probe_id = units.probe_id.values[0]
 
-                # N.B. "get_lfp" returns a subset of all channels above
-                data.lfp_VISp = session.get_lfp(probe_id).sel(time=slice(tstart, tstop),
-                                                                channel=14)
-                # self.Nchannels_V1 = len(self.lfp_slice_V1.channel) # store number of channels with LFP in V1
-                # self.lfp_sampling_rate = session.probes.lfp_sampling_rate[probe_id] # keeping track of sampling rate
-                
-                print('data successfully loaded in %.1fs' % (time.time()-tic))
-                data.save()
+                         # -- let's fetch the lfp data for that probe and that session --
+                         # let's fetch the all the channels falling into V1 domain
+                         channel_ids = session.channels[\
+                              (session.channels.probe_id == probe_id) & \
+                              (session.channels.ecephys_structure_acronym.isin([loc]))\
+                                                       ].index.values
+
+                         ############
+                         # FIND THE CHANNEL THAT HAS MOST pLFP POWER !!
+                         ############
+                         # limit LFP to desired times and channels
+
+                         # N.B. "get_lfp" returns a subset of all channels above
+                         try:
+                              setattr(data, 'lfp_%s' % loc,
+                                   session.get_lfp(probe_id).sel(\
+                                                            time=slice(tstart, tstop),
+                                                            channel=channel_ids))
+                         except KeyError:
+                              print('LFP data not found for ', session_id, sample_index)
+                         # self.Nchannels_V1 = len(self.lfp_slice_V1.channel) # store number of channels with LFP in V1
+                         # self.lfp_sampling_rate = session.probes.lfp_sampling_rate[probe_id] # keeping track of sampling rate
+
+          data.save()
+     print('session %s: %i samples, data successfully loaded in %.1fs' %\
+                              (session_id, sample_index, time.time()-tic))
 
 # all_sessions.full_genotype.str.find('Pvalb-IRES-Cre')
 
 # %%
-
-import sys
 
 data = Data(715093703, 3)
 

@@ -105,13 +105,13 @@ for session_id in sessions.index[:1]:
 
             # -- let's fetch the lfp data for that probe and that session --
             # let's fetch the all the channels falling into V1 domain
-            # data.V1_channel_ids = session.channels[(session.channels.probe_id == probe_id) & \
-            #               (session.channels.ecephys_structure_acronym.isin(['VISp']))].index.values
+            channel_ids = session.channels[(session.channels.probe_id == probe_id) &\
+                (session.channels.ecephys_structure_acronym.isin([loc]))].index.values
 
             # limit LFP to desired times and channels
             # N.B. "get_lfp" returns a subset of all channels above
             data.lfp_VISp = session.get_lfp(probe_id).sel(time=slice(tstart, tstop),
-                                                              channel=14)
+                                                            channel=channels_ids[10])
             # self.Nchannels_V1 = len(self.lfp_slice_V1.channel) # store number of channels with LFP in V1
             # self.lfp_sampling_rate = session.probes.lfp_sampling_rate[probe_id] # keeping track of sampling rate
             
