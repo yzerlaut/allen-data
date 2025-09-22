@@ -12,5 +12,5 @@ brew install hdf5 # or install hdf5 support
 ```
 conda create -n "npxallen" python=3.9
 conda activate npxallen
-pip install allensdk
+pip install allensdk ipykernel
 ```
