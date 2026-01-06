@@ -83,7 +83,7 @@ class Data:
 
 
 # %%
-DOWNLOAD, nMax = True, 1
+DOWNLOAD, nMax = True, 1000
 if DOWNLOAD:
      for session_id in sessions.index[::-1][:nMax]:
 
