@@ -83,7 +83,7 @@ class Data:
 
 
 # %%
-DOWNLOAD, nMax = True, 1000
+DOWNLOAD, nMax = False, 1000
 if DOWNLOAD:
      for session_id in sessions.index[::-1][:nMax]:
 
@@ -180,31 +180,130 @@ if DOWNLOAD:
 # all_sessions.full_genotype.str.find('Pvalb-IRES-Cre')
 
 # %%
-
+from scipy.ndimage import gaussian_filter1d as gaussian_filter
 data = Data(715093703, 3)
-dir(data)
-fig, AX = pt.figure(axes=(3,1), ax_scale=(2,1))
 
-# raster
-for i, times in enumerate(data.raster_VISp):
-     AX[0].plot(times, i+0*times, 'o')
 
-# lfp
-t = np.linspace(data.tstart, data.tstop, len(data.lfp_VISp))
-AX[-1].plot(t-t[0], data.lfp_VISp)
-pt.draw_bar_scales(AX[-1], 
-                   Ybar=10, Ybar_label='10',
-                   Xbar=10, Xbar_label='10s')
+# %%
+channels = [2,6,10,14,18]
 
-# running speed 
-t = np.linspace(data.tstart, data.tstop, len(data.running_speed))
-AX[-1].plot(t-t[0], data.running_speed)
-pt.draw_bar_scales(AX[-1], 
-                   Ybar=10, Ybar_label='10cm/s',
-                   Xbar=10, Xbar_label='10s')
+def plot(data, t0, duration):
 
-for ax in AX:
-     ax.axis('off')
-     ax.set_xlim([data.tstart, data.tstop])
+     fig, AX = pt.figure(axes_extents=[[[1,3]],[[1,8]],[[1,2]]], 
+                         wspace=0.3,
+                         ax_scale=(3,.2))
 
+     # raster
+     for i, times in enumerate(data.raster_VISp):
+          cond = (times>=t0) & (times<=t0+duration)
+          pt.scatter(times[cond], i+0*times[cond], ax=AX[0], ms=2,color='grey')
+     pt.annotate(AX[0], '%i units ' % len(data.raster_VISp), 
+                 (0,0), rotation=90, ha='right')
+     # lfp
+     subsampling, smoothing = 200, 40
+     t = np.linspace(data.tstart, data.tstop, data.lfp_VISp.shape[0])
+     cond = (t>=t0) & (t<=t0+duration)
+     for c, chan in enumerate(channels):
+          lfp = gaussian_filter(data.lfp_VISp[cond,chan], sigma=smoothing)
+          AX[1].plot(t[cond][::subsampling],c*150e-6+lfp[::subsampling],
+                    color=pt.copper(.2+c/5.), lw=1)
+     pt.draw_bar_scales(AX[1], 
+                    Ybar=100e-6, Ybar_label='100$\mu$V',Xbar=1e-3)
+
+     # running speed 
+     t = np.linspace(data.tstart, data.tstop, len(data.running_speed))
+     cond = (t>=t0) & (t<=t0+duration)
+     AX[-1].plot(t[cond], gaussian_filter(data.running_speed[cond], 
+                                        sigma=5))
+     pt.draw_bar_scales(AX[-1], 
+                    Ybar=10, Ybar_label='10cm/s',
+                    Xbar=5, Xbar_label='5s')
+
+     for ax in AX:
+          ax.axis('off')
+
+     return fig, AX
+
+pt.set_style()
+data = Data(715093703, 3)
+fig, AX = plot(data, data.tstart+20, 200)
+
+samples = data.tstart+np.array([37, 69, 90])
+
+for s, t0 in enumerate(samples):
+     ax = AX[2]
+     ax.fill_between([t0,t0+3], ax.get_ylim()[0], ax.get_ylim()[1],
+                         color='black', alpha=0.2, lw=0)
+
+fig, AX = plot_zoom(data, samples)
+fig.savefig('
+
+# %%
+# data = Data(715093703, 2)
+# plot(data, data.tstart+120, 200)
+
+# %%
+# data = Data(715093703, 3)
+# plot(data, data.tstart+20, 200)
+
+# %%
+
+# %%
+def plot_zoom(data, samples, duration=2):
+
+     fig, AX = pt.figure(axes_extents=[[[1,3]],[[1,8]],[[1,2]]], 
+                         wspace=0.3,
+                         ax_scale=(3,.2))
+
+     spacing = 1.2
+     for s, t0 in enumerate(samples):
+          # raster
+          for i, times in enumerate(data.raster_VISp):
+               cond = (times>=t0) & (times<=t0+duration)
+               pt.scatter(times[cond]-t0+s*duration*spacing,
+                          i+0*times[cond], ax=AX[0], ms=2,color='grey')
+          pt.annotate(AX[0], '%i units ' % len(data.raster_VISp), 
+                    (0,0), rotation=90, ha='right')
+          # lfp
+          subsampling, smoothing = 2, 4
+          t = np.linspace(data.tstart, data.tstop, data.lfp_VISp.shape[0])
+          cond = (t>=t0) & (t<=t0+duration)
+          for c, chan in enumerate(channels):
+               lfp = gaussian_filter(data.lfp_VISp[cond,chan], sigma=smoothing)
+               AX[1].plot(t[cond][::subsampling]-t0+s*duration*spacing,
+                          c*150e-6+lfp[::subsampling],
+                         color=pt.copper(.2+c/5.), lw=1)
+          # running speed 
+          t = np.linspace(data.tstart, data.tstop, len(data.running_speed))
+          cond = (t>=t0) & (t<=t0+duration)
+          AX[-1].plot(t[cond]-t0+s*duration*spacing, 
+                      gaussian_filter(data.running_speed[cond], 
+                                        sigma=5), 'k-')
+
+     pt.draw_bar_scales(AX[1], 
+                    Ybar=100e-6, Ybar_label='100$\mu$V',Xbar=1e-3)
+
+     pt.draw_bar_scales(AX[-1], 
+                    Ybar=10, Ybar_label='10cm/s',
+                    Xbar=.3, Xbar_label='300ms')
+
+     for ax in AX:
+          ax.axis('off')
+
+     return fig, AX
+
+samples = data.tstart+np.array([37, 73, 90, 170])
+plot_zoom(data, samples)
+# %%
+6409 --> oscill. run.
+
+# %%
+data = Data(760345702, 2)
+fig, AX = plot(data, data.tstart+0, 200)
+
+# samples = data.tstart+np.array([37, 73, 90, 170])
+# for s, t0 in enumerate(samples):
+#      ax = AX[2]
+#      ax.fill_between([t0,t0+3], ax.get_ylim()[0], ax.get_ylim()[1],
+#                          color='black', alpha=0.2, lw=0)
 # %%
