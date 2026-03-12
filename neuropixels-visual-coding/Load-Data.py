@@ -61,7 +61,7 @@ class Data:
                  setattr(self, key, data[key])
 
 
-
+# %%
 for session_id in sessions.index[:1]:
 
     sample_index = 0 # we restart the sample index
@@ -124,13 +124,17 @@ for session_id in sessions.index[:1]:
 
 import sys
 sys.path.append('..')
-import plot_tools as pt
-pt.set_style('dark')
 
-data = Data(715093703, 3)
+import numpy as np
+
+import plot_tools as pt
+pt.set_style()#'dark')
+
+data = Data(715093703, 2)
 
 fig, AX = pt.figure(axes=(3,1), ax_scale=(2,1))
 
+"""
 # raster
 for i, times in enumerate(data.raster_VISp):
      AX[0].plot(times, i+0*times, 'o')
@@ -142,6 +146,7 @@ pt.draw_bar_scales(AX[-1],
                    Ybar=10, Ybar_label='10',
                    Xbar=10, Xbar_label='10s')
 
+"""
 # running speed 
 t = np.linspace(data.tstart, data.tstop, len(data.running_speed))
 AX[-1].plot(t-t[0], data.running_speed)

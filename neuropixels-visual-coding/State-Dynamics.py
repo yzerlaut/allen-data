@@ -183,6 +183,28 @@ if DOWNLOAD:
 from scipy.ndimage import gaussian_filter1d as gaussian_filter
 data = Data(715093703, 3)
 
+# raster
+for i, times in enumerate(data.raster_VISp):
+     AX[0].plot(times, i+0*times, 'o')
+
+# lfp
+t = np.linspace(data.tstart, data.tstop, len(data.lfp_VISp))
+AX[-1].plot(t-t[0], data.lfp_VISp)
+pt.draw_bar_scales(AX[-1], 
+                   Ybar=10, Ybar_label='10',
+                   Xbar=10, Xbar_label='10s')
+
+# running speed 
+t = np.linspace(data.tstart, data.tstop, len(data.running_speed))
+AX[-1].plot(t-t[0], data.running_speed)
+
+pt.draw_bar_scales(AX[-1], 
+                   Ybar=10, Ybar_label='10cm/s',
+                   Xbar=10, Xbar_label='10s')
+
+for ax in AX:
+     ax.axis('off')
+     ax.set_xlim([data.tstart, data.tstop])
 
 # %%
 channels = [2,6,10,14,18]
